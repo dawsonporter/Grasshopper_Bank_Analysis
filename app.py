@@ -37,7 +37,7 @@ else:
 
 # Constants
 BASE_URL = "https://banks.data.fdic.gov/api"
-DEFAULT_START_DATE = '20000331'  # March 31, 2000
+DEFAULT_START_DATE = '20200630'  # June 30, 2020 - UPDATED per requirements
 DEFAULT_END_DATE = '20250930'    # Sept 30, 2025
 CACHE_DIR = 'data_cache'
 
@@ -64,6 +64,7 @@ COLOR_SCHEME = {
 }
 
 # Bank name mapping for display - Grasshopper Bank focused
+# CRITICAL: This maps from API/FDIC official names to display names
 BANK_NAME_MAPPING = {
     "GRASSHOPPER BANK, N.A.": "Grasshopper Bank",
     "LIVE OAK BANKING COMPANY": "Live Oak Bank",
@@ -86,6 +87,37 @@ BANK_INFO = [
     {"cert": "58410", "name": "CROSS RIVER BANK"},
     {"cert": "35546", "name": "AXOS BANK"},
 ]
+
+# PRIMARY BANK - This is the bank we're analyzing (used throughout the app)
+PRIMARY_BANK_DISPLAY_NAME = "Grasshopper Bank"
+
+def normalize_bank_name(bank_name: str) -> str:
+    """
+    Normalize and map bank names to their display names.
+    This handles the mapping from FDIC official names to our display names.
+    
+    Args:
+        bank_name: Original bank name from API or data
+        
+    Returns:
+        Normalized display name
+    """
+    if not bank_name:
+        return bank_name
+    
+    # First, try exact match
+    if bank_name in BANK_NAME_MAPPING:
+        return BANK_NAME_MAPPING[bank_name]
+    
+    # Try case-insensitive match
+    bank_name_upper = bank_name.upper().strip()
+    for official_name, display_name in BANK_NAME_MAPPING.items():
+        if official_name.upper().strip() == bank_name_upper:
+            return display_name
+    
+    # If no match found, return original (but log it)
+    logger.warning(f"No mapping found for bank name: '{bank_name}'")
+    return bank_name
 
 class FDICAPIClient:
     """
@@ -370,7 +402,9 @@ class BankDataRepository:
             quarters = pd.date_range(start=start, end=end, freq='Q')
             
             # Base values - different scale for different bank types
-            is_grasshopper = bank_name == "GRASSHOPPER BANK, N.A."
+            # Normalize the bank name for comparison
+            normalized_name = normalize_bank_name(bank_name)
+            is_grasshopper = normalized_name == PRIMARY_BANK_DISPLAY_NAME
             
             # Grasshopper and peers are smaller community/specialized banks
             base_assets = 2_000_000_000 if is_grasshopper else np.random.uniform(1_500_000_000, 5_000_000_000)
@@ -775,8 +809,14 @@ class BankDataService:
         # Calculate metrics
         metrics_df = self.calculator.calculate_metrics(data['financials_data'])
         
-        # Apply the bank name mapping
-        metrics_df['Bank'] = metrics_df['Bank'].map(lambda x: BANK_NAME_MAPPING.get(x, x))
+        # CRITICAL FIX: Apply bank name normalization to EVERY bank name in the dataframe
+        # This ensures all bank names are converted from FDIC official names to display names
+        logger.info("Applying bank name normalization...")
+        metrics_df['Bank'] = metrics_df['Bank'].apply(normalize_bank_name)
+        
+        # Log the unique banks after normalization to verify
+        unique_banks_after = metrics_df['Bank'].unique()
+        logger.info(f"Banks after normalization: {sorted(unique_banks_after)}")
         
         # Define the order of columns - REMOVED Agriculture and Credit Cards, ADDED Auto Loans
         metric_order = [
@@ -997,12 +1037,12 @@ class DashboardBuilder:
                     options=[
                         {'label': '1 Year', 'value': 1},
                         {'label': '2 Years', 'value': 2},
+                        {'label': '3 Years', 'value': 3},
+                        {'label': '4 Years', 'value': 4},
                         {'label': '5 Years', 'value': 5},
-                        {'label': '10 Years', 'value': 10},
-                        {'label': '15 Years', 'value': 15},
-                        {'label': '20 Years', 'value': 20},
+                        {'label': '6 Years', 'value': 6},
                     ],
-                    value=5,  # Set default value to 5 years
+                    value=4,  # Set default value to 4 years
                     clearable=False,
                     style={'width': '100%', 'color': COLOR_SCHEME['text']},
                 ),
@@ -1143,8 +1183,8 @@ class DashboardBuilder:
             Input('metric-selector', 'value')  # Using metric-selector as a dummy input to initialize
         )
         def update_peer_selector(dummy):
-            # Get all unique banks from the data except Grasshopper Bank
-            all_available_banks = sorted(list(set(self.df['Bank'].unique()) - {'Grasshopper Bank'}))
+            # Get all unique banks from the data except Grasshopper Bank (using PRIMARY_BANK_DISPLAY_NAME)
+            all_available_banks = sorted(list(set(self.df['Bank'].unique()) - {PRIMARY_BANK_DISPLAY_NAME}))
             logger.info(f"Available banks for selection: {len(all_available_banks)}")
             
             # Create the dropdown with ALL available banks as options and select all by default
@@ -1166,7 +1206,7 @@ class DashboardBuilder:
             if n_clicks is None:
                 raise PreventUpdate
                 
-            # Get all available options except Grasshopper Bank
+            # Get all available options
             all_peers = [option['value'] for option in all_options]
             logger.info(f"Adding all {len(all_peers)} peers")
             
@@ -1216,8 +1256,8 @@ class DashboardBuilder:
             # Convert selected_date from string to datetime
             selected_date = pd.to_datetime(selected_date).to_pydatetime()
             
-            # Always include Grasshopper Bank
-            selected_banks = ['Grasshopper Bank'] + selected_peers
+            # Always include Grasshopper Bank (using PRIMARY_BANK_DISPLAY_NAME)
+            selected_banks = [PRIMARY_BANK_DISPLAY_NAME] + selected_peers
             
             # Filter data
             filtered_df = self.df[(self.df['Date'] == selected_date) & (self.df['Bank'].isin(selected_banks))]
@@ -1253,8 +1293,8 @@ class DashboardBuilder:
             if not selected_metric:
                 return self._create_empty_figure("No metric selected"), ""
             
-            # Always include Grasshopper Bank
-            selected_banks = ['Grasshopper Bank'] + selected_peers
+            # Always include Grasshopper Bank (using PRIMARY_BANK_DISPLAY_NAME)
+            selected_banks = [PRIMARY_BANK_DISPLAY_NAME] + selected_peers
             
             # Calculate date range for display
             end_date = self.df['Date'].max()
@@ -1277,8 +1317,8 @@ class DashboardBuilder:
             if not selected_metric:
                 return html.P("Select a metric to view trend analysis", style={"color": COLOR_SCHEME['text']})
             
-            # Always include Grasshopper Bank
-            selected_banks = ['Grasshopper Bank'] + selected_peers
+            # Always include Grasshopper Bank (using PRIMARY_BANK_DISPLAY_NAME)
+            selected_banks = [PRIMARY_BANK_DISPLAY_NAME] + selected_peers
             
             # Create the trend analysis
             return self._create_trend_analysis(selected_banks, selected_metric, trend_timeline)
@@ -1312,8 +1352,8 @@ class DashboardBuilder:
             else:
                 return html.P("Click on a bar to see details", style={"color": COLOR_SCHEME['text']}), None
             
-            # Always include Grasshopper Bank
-            selected_banks = ['Grasshopper Bank'] + selected_peers
+            # Always include Grasshopper Bank (using PRIMARY_BANK_DISPLAY_NAME)
+            selected_banks = [PRIMARY_BANK_DISPLAY_NAME] + selected_peers
             
             if bank not in selected_banks:
                 return html.P("Selected bank is not in the current comparison. Please select a displayed bank.", 
@@ -1373,11 +1413,11 @@ class DashboardBuilder:
         Returns:
             Bar chart figure
         """
-        # Set colors for bars (Grasshopper Bank is highlighted)
-        colors = [COLOR_SCHEME['grasshopper'] if bank == 'Grasshopper Bank' else COLOR_SCHEME['peer'] for bank in df['Bank']]
+        # Set colors for bars (Grasshopper Bank is highlighted using PRIMARY_BANK_DISPLAY_NAME)
+        colors = [COLOR_SCHEME['grasshopper'] if bank == PRIMARY_BANK_DISPLAY_NAME else COLOR_SCHEME['peer'] for bank in df['Bank']]
         
         # Increase the opacity for better visibility
-        opacities = [1.0 if bank == 'Grasshopper Bank' else 0.6 for bank in df['Bank']]
+        opacities = [1.0 if bank == PRIMARY_BANK_DISPLAY_NAME else 0.6 for bank in df['Bank']]
         
         # Create figure
         fig = go.Figure()
@@ -1461,9 +1501,9 @@ class DashboardBuilder:
         
         # Add a trace for each bank
         for bank in pivot_df.columns:
-            color = COLOR_SCHEME['grasshopper'] if bank == 'Grasshopper Bank' else COLOR_SCHEME['peer']
-            line_width = 3 if bank == 'Grasshopper Bank' else 1.5
-            opacity = 1 if bank == 'Grasshopper Bank' else COLOR_SCHEME['peer_opacity']
+            color = COLOR_SCHEME['grasshopper'] if bank == PRIMARY_BANK_DISPLAY_NAME else COLOR_SCHEME['peer']
+            line_width = 3 if bank == PRIMARY_BANK_DISPLAY_NAME else 1.5
+            opacity = 1 if bank == PRIMARY_BANK_DISPLAY_NAME else COLOR_SCHEME['peer_opacity']
             
             fig.add_trace(go.Scatter(
                 x=pivot_df.index,
@@ -1479,14 +1519,11 @@ class DashboardBuilder:
         if trend_timeline <= 2:
             dtick = 'M3'  # Every 3 months
             tickformat = '%b\n%Y'
-        elif trend_timeline <= 5:
+        elif trend_timeline <= 4:
             dtick = 'M6'  # Every 6 months
             tickformat = '%b\n%Y'
-        elif trend_timeline <= 10:
-            dtick = 'M12'  # Every year
-            tickformat = '%Y'
         else:
-            dtick = 'M24'  # Every 2 years
+            dtick = 'M12'  # Every year
             tickformat = '%Y'
         
         # Update layout with removed legend
@@ -1537,14 +1574,14 @@ class DashboardBuilder:
             else:
                 return f"{value:.2f}"
         
-        # Get Grasshopper Bank data
-        gh_df = df[df['Bank'] == 'Grasshopper Bank']
+        # Get Grasshopper Bank data (using PRIMARY_BANK_DISPLAY_NAME)
+        gh_df = df[df['Bank'] == PRIMARY_BANK_DISPLAY_NAME]
         gh_value = gh_df[metric].values[0] if not gh_df.empty else None
         
         # Calculate statistics
         if gh_value is not None:
             gh_percentile = stats.percentileofscore(df[metric], gh_value)
-            gh_rank = df[metric].rank(ascending=False, method='min')[df['Bank'] == 'Grasshopper Bank'].values[0]
+            gh_rank = df[metric].rank(ascending=False, method='min')[df['Bank'] == PRIMARY_BANK_DISPLAY_NAME].values[0]
         else:
             gh_percentile = None
             gh_rank = None
@@ -1581,7 +1618,7 @@ class DashboardBuilder:
                     html.Div(format_value(df[metric].median()))
                 ], className="stat-row"),
                 html.Div([
-                    html.Div("Grasshopper Bank Value:", className="stat-label gh-highlight"),
+                    html.Div(f"{PRIMARY_BANK_DISPLAY_NAME} Value:", className="stat-label gh-highlight"),
                     html.Div(format_value(gh_value) if gh_value is not None else "N/A", className="gh-highlight")
                 ], className="stat-row"),
                 html.Div([
@@ -1596,7 +1633,7 @@ class DashboardBuilder:
 
             # Grasshopper Bank Snapshot Statistics Section
             html.Div([
-                html.Div("Grasshopper Bank's Position", className="stat-section-title"),
+                html.Div(f"{PRIMARY_BANK_DISPLAY_NAME}'s Position", className="stat-section-title"),
                 html.Div([
                     html.Div("Percentile Rank:", className="stat-label"),
                     html.Div(f"{gh_percentile:.1f}%" if gh_percentile is not None else "N/A")
@@ -1620,7 +1657,7 @@ class DashboardBuilder:
         """Safely calculate and format z-score display for Grasshopper Bank"""
         try:
             z_values = stats.zscore(df[metric].values)
-            gh_index = df.index[df['Bank'] == 'Grasshopper Bank'].tolist()
+            gh_index = df.index[df['Bank'] == PRIMARY_BANK_DISPLAY_NAME].tolist()
             if gh_index:
                 return f"{z_values[gh_index[0]]:.2f} (How many standard deviations from the average)"
             return "N/A"
@@ -1653,11 +1690,11 @@ class DashboardBuilder:
         # Create a pivot table for easier analysis
         pivot_df = filtered_df.pivot(index='Date', columns='Bank', values=metric)
         
-        # Check if Grasshopper Bank data exists
-        if 'Grasshopper Bank' not in pivot_df.columns or pivot_df['Grasshopper Bank'].count() < 2:
-            return html.Div("Insufficient data for Grasshopper Bank to perform trend analysis")
+        # Check if Grasshopper Bank data exists (using PRIMARY_BANK_DISPLAY_NAME)
+        if PRIMARY_BANK_DISPLAY_NAME not in pivot_df.columns or pivot_df[PRIMARY_BANK_DISPLAY_NAME].count() < 2:
+            return html.Div(f"Insufficient data for {PRIMARY_BANK_DISPLAY_NAME} to perform trend analysis")
         
-        gh_data = pivot_df['Grasshopper Bank'].dropna()
+        gh_data = pivot_df[PRIMARY_BANK_DISPLAY_NAME].dropna()
         
         # Calculate statistics
         stats_data = {}
@@ -1679,7 +1716,7 @@ class DashboardBuilder:
             volatility = bank_data.std()
             
             # Calculate correlation with Grasshopper Bank
-            if bank != 'Grasshopper Bank' and len(gh_data) >= 2:
+            if bank != PRIMARY_BANK_DISPLAY_NAME and len(gh_data) >= 2:
                 # Get overlapping data points
                 overlap_df = pd.concat([gh_data, bank_data], axis=1).dropna()
                 if len(overlap_df) >= 2:
@@ -1700,12 +1737,12 @@ class DashboardBuilder:
             stats_data[bank] = {
                 'growth_rate': growth_rate,
                 'volatility': volatility,
-                'correlation': correlation if bank != 'Grasshopper Bank' else np.nan,
+                'correlation': correlation if bank != PRIMARY_BANK_DISPLAY_NAME else np.nan,
                 'trend_direction': trend_direction
             }
             
         # Find banks with highest and lowest correlation to Grasshopper Bank
-        correlations = {bank: data['correlation'] for bank, data in stats_data.items() if bank != 'Grasshopper Bank' and not np.isnan(data['correlation'])}
+        correlations = {bank: data['correlation'] for bank, data in stats_data.items() if bank != PRIMARY_BANK_DISPLAY_NAME and not np.isnan(data['correlation'])}
         
         if correlations:
             most_similar = max(correlations.items(), key=lambda x: x[1])
@@ -1725,21 +1762,21 @@ class DashboardBuilder:
                 
                 # Grasshopper Bank Stats
                 html.Div([
-                    html.Div("Grasshopper Bank Growth Rate:", className="stat-label"),
-                    html.Div(f"{stats_data.get('Grasshopper Bank', {}).get('growth_rate', np.nan):.2f}% over {trend_timeline} years" 
-                             if 'Grasshopper Bank' in stats_data else "N/A")
+                    html.Div(f"{PRIMARY_BANK_DISPLAY_NAME} Growth Rate:", className="stat-label"),
+                    html.Div(f"{stats_data.get(PRIMARY_BANK_DISPLAY_NAME, {}).get('growth_rate', np.nan):.2f}% over {trend_timeline} years" 
+                             if PRIMARY_BANK_DISPLAY_NAME in stats_data else "N/A")
                 ], className="stat-row"),
                 
                 html.Div([
-                    html.Div("Grasshopper Bank Trend Direction:", className="stat-label"),
-                    html.Div(f"{stats_data.get('Grasshopper Bank', {}).get('trend_direction', 'Unknown')}" 
-                             if 'Grasshopper Bank' in stats_data else "N/A")
+                    html.Div(f"{PRIMARY_BANK_DISPLAY_NAME} Trend Direction:", className="stat-label"),
+                    html.Div(f"{stats_data.get(PRIMARY_BANK_DISPLAY_NAME, {}).get('trend_direction', 'Unknown')}" 
+                             if PRIMARY_BANK_DISPLAY_NAME in stats_data else "N/A")
                 ], className="stat-row"),
                 
                 html.Div([
-                    html.Div("Grasshopper Bank Volatility:", className="stat-label"),
-                    html.Div(f"{stats_data.get('Grasshopper Bank', {}).get('volatility', np.nan):.4f} (Lower means more stable)" 
-                             if 'Grasshopper Bank' in stats_data else "N/A")
+                    html.Div(f"{PRIMARY_BANK_DISPLAY_NAME} Volatility:", className="stat-label"),
+                    html.Div(f"{stats_data.get(PRIMARY_BANK_DISPLAY_NAME, {}).get('volatility', np.nan):.4f} (Lower means more stable)" 
+                             if PRIMARY_BANK_DISPLAY_NAME in stats_data else "N/A")
                 ], className="stat-row"),
                 
                 # Peer Comparison
@@ -1755,12 +1792,12 @@ class DashboardBuilder:
                 
                 # Correlation Analysis
                 html.Div([
-                    html.Div("Bank moving most like Grasshopper:", className="stat-label"),
+                    html.Div(f"Bank moving most like {PRIMARY_BANK_DISPLAY_NAME}:", className="stat-label"),
                     html.Div(f"{most_similar[0]} (correlation: {most_similar[1]:.2f})" if most_similar[0] else "N/A")
                 ], className="stat-row"),
                 
                 html.Div([
-                    html.Div("Bank moving least like Grasshopper:", className="stat-label"),
+                    html.Div(f"Bank moving least like {PRIMARY_BANK_DISPLAY_NAME}:", className="stat-label"),
                     html.Div(f"{least_similar[0]} (correlation: {least_similar[1]:.2f})" if least_similar[0] else "N/A")
                 ], className="stat-row"),
                 
@@ -1796,8 +1833,8 @@ class DashboardBuilder:
         # Format date
         formatted_date = date.strftime('%m/%d/%y')
         
-        # Determine if the bank is Grasshopper Bank or a peer
-        is_gh = bank == 'Grasshopper Bank'
+        # Determine if the bank is Grasshopper Bank or a peer (using PRIMARY_BANK_DISPLAY_NAME)
+        is_gh = bank == PRIMARY_BANK_DISPLAY_NAME
         
         # Create the card color based on the bank
         card_bg_color = COLOR_SCHEME['grasshopper'] if is_gh else COLOR_SCHEME['secondary']
@@ -2123,14 +2160,14 @@ def load_sample_data():
     """
     logger.info("Loading sample data for development/testing")
     
-    # Directly use all banks from BANK_NAME_MAPPING values to ensure completeness
+    # Use the DISPLAY names from BANK_NAME_MAPPING for sample data
     all_banks = list(BANK_NAME_MAPPING.values())
     
     # Print all banks to verify
     logger.info(f"Generating sample data for {len(all_banks)} banks: {', '.join(all_banks)}")
     
-    # Use 'ME' (month end) instead of deprecated 'M'
-    all_month_ends = pd.date_range(start='2000-01-31', end='2024-12-31', freq='ME')
+    # Use 'ME' (month end) instead of deprecated 'M', starting from 6/30/2020
+    all_month_ends = pd.date_range(start='2020-06-30', end='2024-12-31', freq='ME')
     # Keep only quarter-end months (Mar, Jun, Sep, Dec)
     dates = all_month_ends[all_month_ends.month.isin([3, 6, 9, 12])]
     
@@ -2138,7 +2175,7 @@ def load_sample_data():
     data = []
     for bank in all_banks:
         # Different starting asset sizes based on bank type (specialty/community banks)
-        if bank == "Grasshopper Bank":
+        if bank == PRIMARY_BANK_DISPLAY_NAME:
             base_assets = np.random.uniform(2000000000, 3000000000)  # $2-3 billion
         else:
             base_assets = np.random.uniform(1500000000, 5000000000)  # $1.5-5 billion
@@ -2159,7 +2196,7 @@ def load_sample_data():
             allowance_for_credit_loss = total_loans * np.random.uniform(0.01, 0.02)
             
             # Special case for Grasshopper Bank - specialized banking focus
-            if bank == "Grasshopper Bank":
+            if bank == PRIMARY_BANK_DISPLAY_NAME:
                 # Technology/startup focused bank characteristics
                 total_deposits = total_assets * np.random.uniform(0.70, 0.76)
                 # Strong loan portfolio
