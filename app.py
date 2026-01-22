@@ -217,6 +217,7 @@ class BankDataRepository:
             'Common Equity Tier 1 Before Adjustments',
             'Bank Equity Capital',
             'CECL Transition Amount',
+            'CECL Transitional Amount',
             'Perpetual Preferred Stock'
         ]
         # Create cache directory if it doesn't exist
@@ -291,11 +292,14 @@ class BankDataRepository:
         logger.info(f"Fetching fresh data from FDIC API for {start_date} to {end_date}")
         
         institution_fields = "NAME,CERT"
-        # Added LNAUTO for Auto Loans
+        # Added CECL-specific fields for proper concentration ratio calculation:
+        # RCFDJ447/RCONJ447 = CECL transitional amount (for removing double counting)
+        # These fields contain the actual phase-in amount to subtract from denominator
         financial_fields = ("CERT,REPDTE,ASSET,DEP,LNLSGR,LNLSNET,SC,LNRE,LNCI,LNAG,LNCRCD,LNCONOTH,LNATRES,P3ASSET,P9ASSET,RBCT1J,DRLNLS,CRLNLS,"
                            "NETINC,ERNASTR,NPERFV,P3ASSETR,P9ASSETR,NIMY,NTLNLSR,LNATRESR,NCLNLSR,ROA,ROE,RBC1AAJ,"
                            "RBCT2,RBCRWAJ,LNLSDEPR,LNLSNTV,EEFFR,LNRESNCR,ELNANTR,IDERNCVR,NTLNLSQ,LNRECONS,"
-                           "LNRENRES,LNRENROW,LNRENROT,LNRERES,LNREMULT,LNREAG,LNRECNFM,LNRECNOT,LNCOMRE,CT1BADJ,EQ,EQPP,LNAUTO")
+                           "LNRENRES,LNRENROW,LNRENROT,LNRERES,LNREMULT,LNREAG,LNRECNFM,LNRECNOT,LNCOMRE,CT1BADJ,EQ,EQPP,LNAUTO,"
+                           "RCFDJ447,RCONJ447")
 
         institutions_data = {}
         financials_data = {}
@@ -519,6 +523,7 @@ class BankMetricsCalculator:
             'Bank Equity Capital': "(YTD, $) Total bank equity capital.",
             'Perpetual Preferred Stock': "(YTD, $) The amount of perpetual preferred stock issued by the bank.",
             'CECL Transition Amount': "(YTD, $) Current Expected Credit Loss (CECL) Transition Amount, not including Deferred Tax Assets, adjusted for Perpetual Preferred Stock.",
+            'CECL Transitional Amount': "(Qtly, $) CECL transitional amount for removing double counting in concentration ratio calculations. This is the phase-in amount that appears in both Tier 1 Capital and Allowance.",
             'Net Interest Margin': "(YTD, %) The net interest margin of the entity.",
             'Earning Assets / Total Assets': "(Qtly, %) Ratio of earning assets to total assets.",
             'Nonperforming Assets / Total Assets': "(Qtly, %) Ratio of nonperforming assets to total assets.",
@@ -647,6 +652,7 @@ class BankMetricsCalculator:
             'Common Equity Tier 1 Before Adjustments': self.safe_float(financial.get('CT1BADJ')),
             'Bank Equity Capital': self.safe_float(financial.get('EQ')),
             'Perpetual Preferred Stock': self.safe_float(financial.get('EQPP')),
+            'CECL Transitional Amount': max(self.safe_float(financial.get('RCFDJ447')), self.safe_float(financial.get('RCONJ447'))),
             'Net Interest Margin': self.safe_float(financial.get('NIMY')),
             'Earning Assets / Total Assets': self.safe_float(financial.get('ERNASTR')),
             'Nonperforming Assets / Total Assets': self.safe_float(financial.get('NPERFV')),
@@ -669,45 +675,42 @@ class BankMetricsCalculator:
 
     def _calculate_capital_base(self, metrics: Dict, financial: Dict) -> Tuple[float, float]:
         """
-        Calculate CECL transition amount and capital base.
+        Calculate capital base for concentration ratios per UBPR methodology.
+        
+        Per UBPR and OCC guidance, the denominator is:
+        Tier 1 (Core) Capital + Allowance for Credit Loss - CECL Double Counting Adjustment
+        
+        The CECL adjustment removes the phase-in amount that appears in BOTH Tier 1 Capital
+        and Allowance to prevent double counting (per agency guidelines).
+        
+        This matches UBPR formula:
+        uc:UBPR8274[P0] + uc:UBPR3123[P0] - (CECL phase-in double counting)
         
         Args:
             metrics: Current metrics
             financial: Financial data
             
         Returns:
-            Tuple of (CECL transition amount, capital base)
+            Tuple of (CECL transitional amount, capital base)
         """
-        ct1badj = metrics['Common Equity Tier 1 Before Adjustments']
-        eq = metrics['Bank Equity Capital']
-        eqpp = metrics['Perpetual Preferred Stock']
         tier1_capital = metrics['Tier 1 (Core) Capital']
         allowance_for_credit_loss = metrics['Allowance for Credit Loss']
-
-        # CECL Transition Amount calculation (apply from 1/1/2019 onwards)
-        # This ensures ALL banks use the same calculation methodology for consistency
-        date = pd.to_datetime(financial.get('REPDTE'), format='%Y%m%d')
+        cecl_transitional_amount = metrics['CECL Transitional Amount']
         
-        if date >= pd.to_datetime('2019-01-01'):
-            cecl_transition_amount = ct1badj - eq + eqpp
-            capital_base = tier1_capital + allowance_for_credit_loss - cecl_transition_amount
-            
-            # Safety check: If CECL adjustment creates unrealistic capital_base, use fallback
-            if capital_base <= 0 or capital_base > tier1_capital * 100:
-                logger.warning(f"CECL adjustment resulted in unusual capital_base ({capital_base}) for {metrics.get('Bank', 'Unknown')} on {date}, using fallback")
-                cecl_transition_amount = 0
-                capital_base = tier1_capital + allowance_for_credit_loss
-        else:
-            # Pre-CECL dates use simple calculation
-            cecl_transition_amount = 0
-            capital_base = tier1_capital + allowance_for_credit_loss
+        # Base calculation: Tier 1 + ACL
+        capital_base = tier1_capital + allowance_for_credit_loss
         
-        # Final safety check: Ensure capital_base is positive
+        # Subtract CECL transitional amount to remove double counting
+        # (only applies if bank is phasing in CECL - otherwise this field is zero)
+        capital_base = capital_base - cecl_transitional_amount
+        
+        # Safety check: Ensure capital_base is positive
         if capital_base <= 0:
-            logger.error(f"Capital base is zero or negative ({capital_base}) for {metrics.get('Bank', 'Unknown')}, using Tier 1 only")
-            capital_base = max(tier1_capital, 1)  # Use Tier 1 or minimum of 1
+            logger.warning(f"Capital base adjustment resulted in non-positive value ({capital_base}) for {metrics.get('Bank', 'Unknown')}, using unadjusted")
+            capital_base = tier1_capital + allowance_for_credit_loss
+            cecl_transitional_amount = 0
             
-        return cecl_transition_amount, capital_base
+        return cecl_transitional_amount, capital_base
 
     def _calculate_capital_ratios(self, metrics: Dict, capital_base: float) -> None:
         """
