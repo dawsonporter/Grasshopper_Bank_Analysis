@@ -686,12 +686,26 @@ class BankMetricsCalculator:
 
         # CECL Transition Amount calculation (only apply from 1/1/2019 onwards)
         date = pd.to_datetime(financial.get('REPDTE'), format='%Y%m%d')
-        if date >= pd.to_datetime('2019-01-01'):
+        
+        # CRITICAL FIX: Only apply CECL adjustment if CT1BADJ is actually populated
+        # For banks where CT1BADJ is not reported (like newer/smaller banks), skip CECL adjustment
+        if date >= pd.to_datetime('2019-01-01') and ct1badj > 0:
             cecl_transition_amount = ct1badj - eq + eqpp
             capital_base = tier1_capital + allowance_for_credit_loss - cecl_transition_amount
+            
+            # ADDITIONAL FIX: If CECL adjustment makes capital_base negative or too small, 
+            # fall back to simple calculation
+            if capital_base <= 0:
+                logger.warning(f"CECL adjustment resulted in negative capital_base for {metrics.get('Bank', 'Unknown')}, using simple calculation instead")
+                cecl_transition_amount = 0
+                capital_base = tier1_capital + allowance_for_credit_loss
         else:
             cecl_transition_amount = 0
             capital_base = tier1_capital + allowance_for_credit_loss
+        
+        # Debug logging for Grasshopper Bank
+        if metrics.get('Bank') and 'GRASSHOPPER' in str(metrics.get('Bank')).upper():
+            logger.info(f"Grasshopper Bank capital_base calculation: Tier1={tier1_capital}, ACL={allowance_for_credit_loss}, capital_base={capital_base}")
             
         return cecl_transition_amount, capital_base
 
@@ -704,8 +718,9 @@ class BankMetricsCalculator:
             metrics: Current metrics
             capital_base: Capital base value
         """
-        # Use a reasonable threshold to avoid division by near-zero
-        if capital_base > 1000000:  # $1 million minimum capital base
+        # CRITICAL FIX: Lowered threshold from $1M to $100 
+        # API might return values in thousands, or capital_base might be smaller than expected
+        if capital_base > 100:  # Minimum threshold - very permissive
             metrics['Real Estate Loans to Tier 1 + ACL'] = (metrics['Real Estate Loans'] / capital_base) * 100
             metrics['RE Construction and Land Development to Tier 1 + ACL'] = (metrics['RE Construction and Land Development'] / capital_base) * 100
             metrics['C&I Loans to Tier 1 + ACL'] = (metrics['Commercial and Industrial Loans'] / capital_base) * 100
@@ -721,6 +736,7 @@ class BankMetricsCalculator:
             metrics['Commercial RE to Tier 1 + ACL'] = (commercial_re / capital_base) * 100
         else:
             # Set to None instead of 0 to indicate the ratio couldn't be calculated
+            logger.warning(f"Capital base too low ({capital_base}) for {metrics.get('Bank', 'Unknown')} on {metrics.get('Date', 'Unknown')}")
             metrics['Real Estate Loans to Tier 1 + ACL'] = None
             metrics['RE Construction and Land Development to Tier 1 + ACL'] = None
             metrics['C&I Loans to Tier 1 + ACL'] = None
