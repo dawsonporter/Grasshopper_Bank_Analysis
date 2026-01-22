@@ -684,28 +684,28 @@ class BankMetricsCalculator:
         tier1_capital = metrics['Tier 1 (Core) Capital']
         allowance_for_credit_loss = metrics['Allowance for Credit Loss']
 
-        # CECL Transition Amount calculation (only apply from 1/1/2019 onwards)
+        # CECL Transition Amount calculation (apply from 1/1/2019 onwards)
+        # This ensures ALL banks use the same calculation methodology for consistency
         date = pd.to_datetime(financial.get('REPDTE'), format='%Y%m%d')
         
-        # CRITICAL FIX: Only apply CECL adjustment if CT1BADJ is actually populated
-        # For banks where CT1BADJ is not reported (like newer/smaller banks), skip CECL adjustment
-        if date >= pd.to_datetime('2019-01-01') and ct1badj > 0:
+        if date >= pd.to_datetime('2019-01-01'):
             cecl_transition_amount = ct1badj - eq + eqpp
             capital_base = tier1_capital + allowance_for_credit_loss - cecl_transition_amount
             
-            # ADDITIONAL FIX: If CECL adjustment makes capital_base negative or too small, 
-            # fall back to simple calculation
-            if capital_base <= 0:
-                logger.warning(f"CECL adjustment resulted in negative capital_base for {metrics.get('Bank', 'Unknown')}, using simple calculation instead")
+            # Safety check: If CECL adjustment creates unrealistic capital_base, use fallback
+            if capital_base <= 0 or capital_base > tier1_capital * 100:
+                logger.warning(f"CECL adjustment resulted in unusual capital_base ({capital_base}) for {metrics.get('Bank', 'Unknown')} on {date}, using fallback")
                 cecl_transition_amount = 0
                 capital_base = tier1_capital + allowance_for_credit_loss
         else:
+            # Pre-CECL dates use simple calculation
             cecl_transition_amount = 0
             capital_base = tier1_capital + allowance_for_credit_loss
         
-        # Debug logging for Grasshopper Bank
-        if metrics.get('Bank') and 'GRASSHOPPER' in str(metrics.get('Bank')).upper():
-            logger.info(f"Grasshopper Bank capital_base calculation: Tier1={tier1_capital}, ACL={allowance_for_credit_loss}, capital_base={capital_base}")
+        # Final safety check: Ensure capital_base is positive
+        if capital_base <= 0:
+            logger.error(f"Capital base is zero or negative ({capital_base}) for {metrics.get('Bank', 'Unknown')}, using Tier 1 only")
+            capital_base = max(tier1_capital, 1)  # Use Tier 1 or minimum of 1
             
         return cecl_transition_amount, capital_base
 
