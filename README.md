@@ -45,9 +45,9 @@ This is meant to produce **more meaningful “apples-to-apples” ranges** on th
   - Bar chart for quick ranking on a chosen metric and quarter
   - Grasshopper visually emphasized
 
-- **Historical Trend Analysis (1–20 years)**
+- **Historical Trend Analysis (1–6 years)**
   - Multi-bank trend lines with flexible lookback
-  - Timeline selector (1, 2, 5, 10, 15, 20 years)
+  - Timeline selector (1, 2, 3, 4, 5, 6 years)
 
 - **Automated Positioning & Context**
   - Percentile ranking and rank # out of selected banks
